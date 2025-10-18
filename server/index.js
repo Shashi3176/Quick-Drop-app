@@ -1,13 +1,17 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import bcrypt from "bcryptjs";
 
 import {v2 as cloudinary} from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
+import cron from "node-cron";
 
-import mongoose, { mongo } from 'mongoose';
+import mongoose from 'mongoose';
+import { format } from 'path';
+
 
 dotenv.config();
 const app = express();
@@ -97,6 +101,22 @@ const fileSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    isEncrypted: {
+        type: Boolean,
+        default: false,
+    },
+    password:{
+        type: String,
+        default: null,
+    },
+    count: {
+        type: Number,
+        required: true,
+    },
+    resourceType: {
+        type: String,
+        required: true,
+    }
 },{timestamps: true});
 
 const File = mongoose.model('File',fileSchema);
@@ -104,11 +124,18 @@ const File = mongoose.model('File',fileSchema);
 // Upload route
 
 app.post('/upload',upload.single('file'),async (req,res) => {
-    console.log("REQ.FILE:", req.file);
-    console.log("REQ.BODY:", req.body);   
     try {
-        const {expiryTime} = req.body;
+        const {expiryTime, password, count} = req.body;
         const fileId = uuidv4();
+        const resourceType = format === "pdf" ? "raw" : "image";
+
+        let hashedPassword = null;
+        let isEncrypted = false;
+        
+        if(password){
+            hashedPassword = await bcrypt.hash(password,10);
+            isEncrypted = true;
+        }
 
         const newFile = new File({
             fileId,
@@ -116,7 +143,11 @@ app.post('/upload',upload.single('file'),async (req,res) => {
             fileURL: req.file.path,
             size: req.file.size,
             expiryTime: Number(expiryTime),
-            cloudinaryUrl: req.file.path
+            cloudinaryUrl: req.file.path,
+            password: hashedPassword,
+            isEncrypted,
+            count,
+            resourceType,
         })
 
         await newFile.save();
@@ -126,7 +157,8 @@ app.post('/upload',upload.single('file'),async (req,res) => {
         .status(201)
         .json({
             message: "File uploaded successfully",
-            link: `/download/${fileId}`,            
+            link: `/file/${fileId}`,  
+            isEncrypted: isEncrypted,          
         });
         
     } catch (error) {
@@ -136,6 +168,27 @@ app.post('/upload',upload.single('file'),async (req,res) => {
         .status(500)
         .json({message: "Upload failed. Try again!!"})
     }
+})
+
+app.get('/file/:id',async (req,res) => {
+    const file = await File.findOne({fileId: req.params.id});
+
+    if(!file){
+        return res
+        .status(404)
+        .json({message: "File not found"})
+    }
+
+    const expired = Date.now() > file.createdAt.getTime() + file.expiryTime*60*1000;
+
+    return res
+    .status(200)
+    .json({
+        fileName: file.fileName,
+        size: file.size,
+        isEncrypted: file.isEncrypted,
+        expired
+    })
 })
 
 app.get('/download/:id', async (req,res) => {
@@ -152,14 +205,41 @@ app.get('/download/:id', async (req,res) => {
         }
 
         const uploadedAt = file.createdAt.getTime();
-        const expiresAt = uploadedAt + file.expiryTime * 60 * 1000;        
+        const expiresAt = uploadedAt + file.expiryTime * 60 * 1000;     
+        
+        if(file.isEncrypted){
+            const {password} = req.body;
+
+            if(!password){
+                return res
+                .status(400)
+                .json({message: "Password required"})
+            }
+
+            const isMatch = await bcrypt.compare(password,file.password);
+
+            if(!isMatch){
+                return res
+                .status(403)
+                .json({message: "Incorrect password"})
+            }
+        }
 
         if(Date.now() > expiresAt){
             return res
             .status(410)
             .json({message: "The file link has expired"})
         }
+
+        if(file.count == 0){
+            return res
+            .status(410)
+            .json({message: "Maximum download count is reached"})
+        }
         
+        file.count = file.count - 1;
+        await file.save();
+
          const downloadUrl = file.cloudinaryUrl.replace(
             '/upload/',
             '/upload/fl_attachment/'
@@ -177,3 +257,30 @@ app.get('/download/:id', async (req,res) => {
         .json({message: "Something went wrong while generating link. Try again"})
     }
 })
+
+cron.schedule("0 */6 * * *", async () => {
+    console.log("Auto clean process initiating..." );
+
+    const now = Date();
+    const allFiles = await File.find({});
+
+    for(const file of allFiles){
+        const expiryTime = file.createdAt.getTime() + file.expiryTime;
+
+        if(now > expiryTime){
+            try {
+                const parts = file.cloudinaryUrl.split('/upload/');   // details after /upload/ which has id + version details
+                const id = parts[1].split(".")[0];  // This gives id with version 
+
+                await cloudinary.uploader.destroy(id,{
+                    resource_type: file.resourceType
+                });
+
+                await file.deleteOne({_id: file.id});
+                console.log(`Deleted the expired file: ${file.fileName}`);                 
+            } catch (error) {
+                console.error(`Error deleting the expired file: ${file.fileName}`);
+            }           
+        }
+    }    
+});
