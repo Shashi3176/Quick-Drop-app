@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import bcrypt from "bcryptjs";
+import bcrypt from 'bcrypt';
 
 import {v2 as cloudinary} from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
@@ -16,8 +16,14 @@ import { format } from 'path';
 dotenv.config();
 const app = express();
 
-app.use(cors());
 app.use(express.json());
+
+
+app.use(cors({
+  origin: 'http://localhost:5173',
+  credentials: true,
+}));
+ 
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT ,() => {
@@ -125,33 +131,38 @@ const File = mongoose.model('File',fileSchema);
 
 app.post('/upload',upload.single('file'),async (req,res) => {
     try {
-        const {expiryTime, password, count} = req.body;
+        const {expiryTime, password, count, isEncrypted} = req.body;
         const fileId = uuidv4();
         const resourceType = format === "pdf" ? "raw" : "image";
-
-        let hashedPassword = null;
-        let isEncrypted = false;
+                
+        let hashedPassword = null;        
         
-        if(password){
+        if(isEncrypted == false){
+            if(!password){
+                return res
+                .status(400)
+                .json({
+                    message: "Password is required"
+                })
+            }
+
             hashedPassword = await bcrypt.hash(password,10);
-            isEncrypted = true;
         }
 
         const newFile = new File({
             fileId,
+            size: req.file.size,
             fileName: req.file.originalname,
             fileURL: req.file.path,
-            size: req.file.size,
             expiryTime: Number(expiryTime),
             cloudinaryUrl: req.file.path,
             password: hashedPassword,
             isEncrypted,
-            count,
+            count: Number(count),
             resourceType,
         })
 
         await newFile.save();
-        console.log(req.file);
         
         return res
         .status(201)
@@ -187,11 +198,12 @@ app.get('/file/:id',async (req,res) => {
         fileName: file.fileName,
         size: file.size,
         isEncrypted: file.isEncrypted,
-        expired
+        expired: expired,
+        link: `/downoladPage/${req.params.id}`, 
     })
 })
 
-app.get('/download/:id', async (req,res) => {
+app.post('/download/:id', async (req,res) => {
     try {
         console.log(req.params.id);
         const file = await File.findOne({fileId: req.params.id});
