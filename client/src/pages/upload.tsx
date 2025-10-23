@@ -170,7 +170,7 @@ const handlePassword = (e: any) => {
 
   <button
     type="button"
-    className=" w-50 rounded-md"
+    className=" w-50 rounded-md mb-6"
     onClick={handleSubmit}
   >
     Upload
