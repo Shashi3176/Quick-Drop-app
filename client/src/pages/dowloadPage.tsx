@@ -8,6 +8,7 @@ export function DownloadPage() {
   const { id } = useParams<{ id: string }>();
   const [file, setFile] = useState<any | null>(null);
   const [password, setPassword] = useState();
+  const [message,setMessage] = useState();
 
     const [formData, setFormData] = useState(
     {
@@ -72,6 +73,7 @@ export function DownloadPage() {
 
     const data = await response.json();
     console.log(data);
+    setMessage(data.message);
 
     window.location.href = data.downloadURL;
     } catch (err) {
@@ -127,6 +129,9 @@ export function DownloadPage() {
             onClick={handleSubmit}
         >
             Download
+            <p>
+              {message}
+            </p>
         </button>
         
         </div>        
